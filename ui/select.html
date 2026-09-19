@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; cursor: crosshair; user-select: none; }
+  img { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; }
+  #dim { position: fixed; inset: 0; background: rgba(0,0,0,.35); }
+  #sel { position: fixed; display: none; outline: 1.5px solid #3DD9C1; box-shadow: 0 0 0 100vmax rgba(0,0,0,.35); }
+  #hint { position: fixed; top: 24px; left: 50%; transform: translateX(-50%); padding: 6px 12px; border-radius: 8px;
+          background: rgba(20,20,22,.85); color: #eee; font: 13px system-ui, sans-serif; }
+</style>
+</head>
+<body>
+<img id="shot" alt="">
+<div id="dim"></div>
+<div id="sel"></div>
+<div id="hint">Drag to capture · Esc to cancel</div>
+<script>
+const { invoke } = window.__TAURI__.core;
+const win = window.__TAURI__.window.getCurrentWindow();
+const shot = document.getElementById('shot'), sel = document.getElementById('sel'), dim = document.getElementById('dim');
+let start = null, rect = null;
+
+invoke('take_shot').then(url => {
+  shot.onload = () => win.show().then(() => win.setFocus());
+  shot.src = url;
+});
+
+addEventListener('keydown', e => { if (e.key === 'Escape') win.close(); });
+
+addEventListener('pointerdown', e => {
+  start = { x: e.clientX, y: e.clientY };
+  document.getElementById('hint')?.remove();
+});
+addEventListener('pointermove', e => {
+  if (!start) return;
+  const x = Math.min(start.x, e.clientX), y = Math.min(start.y, e.clientY);
+  rect = { x, y, w: Math.abs(e.clientX - start.x), h: Math.abs(e.clientY - start.y) };
+  Object.assign(sel.style, { display: 'block', left: x + 'px', top: y + 'px', width: rect.w + 'px', height: rect.h + 'px' });
+  dim.style.display = 'none'; // the selection's shadow does the dimming now
+});
+addEventListener('pointerup', () => {
+  start = null;
+  if (!rect || rect.w < 4 || rect.h < 4) return; // a click, not a drag
+  // Screenshot pixels per CSS pixel (covers HiDPI and fractional scaling).
+  const sx = shot.naturalWidth / innerWidth, sy = shot.naturalHeight / innerHeight;
+  const c = document.createElement('canvas');
+  c.width = Math.round(rect.w * sx); c.height = Math.round(rect.h * sy);
+  c.getContext('2d').drawImage(shot, rect.x * sx, rect.y * sy, c.width, c.height, 0, 0, c.width, c.height);
+  invoke('open_card', { png: c.toDataURL('image/png'), w: rect.w, h: rect.h });
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,160 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --glacier: #3DD9C1; --ink: #FF3B5C; --bg: #1c1c1f; --fg: #eee; --line: rgba(255,255,255,.1); }
+  @media (prefers-color-scheme: light) { :root { --glacier: #0A8F7E; --bg: #f5f5f4; --fg: #222; --line: rgba(0,0,0,.1); } }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
+               font: 13px system-ui, sans-serif; user-select: none; }
+  body { display: flex; flex-direction: column; padding: 10px; box-sizing: border-box; border: 1px solid var(--line); }
+  #stage { flex: 1; display: grid; place-items: center; min-height: 0; }
+  canvas { border-radius: 8px; cursor: crosshair; }
+  canvas.erase { cursor: cell; }
+  #bar { height: 52px; display: flex; align-items: center; gap: 4px; }
+  #bar .grip { flex: 1; align-self: stretch; }
+  button { border: 0; background: none; color: inherit; font: inherit; padding: 6px 10px; border-radius: 7px; cursor: pointer; }
+  button:hover { background: var(--line); }
+  button[aria-pressed=true] { background: var(--glacier); color: #000; }
+  #copy { background: var(--glacier); color: #000; font-weight: 600; }
+  #toast { position: fixed; inset: 0; display: none; place-items: center; background: rgba(0,0,0,.5);
+           color: #fff; font-size: 16px; font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c"></canvas></div>
+<div id="bar">
+  <button data-tool="pen" title="Draw (D)">Draw</button>
+  <button data-tool="arrow" title="Arrow (A)">Arrow</button>
+  <button data-tool="box" title="Box (B)">Box</button>
+  <button data-tool="blur" title="Blur (X)">Blur</button>
+  <button data-tool="erase" title="Erase (E)">Erase</button>
+  <button id="undo" title="Undo (Ctrl+Z)">Undo</button>
+  <div class="grip" data-tauri-drag-region></div>
+  <button id="close" title="Esc">Cancel</button>
+  <button id="copy" title="Enter">Copy</button>
+</div>
+<div id="toast">Copied</div>
+<script>
+const { invoke } = window.__TAURI__.core;
+const win = window.__TAURI__.window.getCurrentWindow();
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+const INK = '#FF3B5C', WIDTH = 4, HIT = 10; // CSS px, like the Mac app
+const img = new Image(), mosaic = document.createElement('canvas');
+let strokes = [], current = null, erasing = false, tool = 'pen', k = 1; // k = image px per CSS px
+
+invoke('take_shot').then(url => { img.onload = setup; img.src = url; });
+
+function setup() {
+  canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+  // Show the shot at its on-screen size, shrunk to fit the card if needed.
+  const cssW = img.naturalWidth / devicePixelRatio, cssH = img.naturalHeight / devicePixelRatio;
+  const fit = Math.min(1, (innerWidth - 20) / cssW, (innerHeight - 72) / cssH);
+  canvas.style.width = cssW * fit + 'px'; canvas.style.height = cssH * fit + 'px';
+  k = img.naturalWidth / (cssW * fit);
+  // Blur = coarse mosaic, drawn through each blur box.
+  const s = 12 * devicePixelRatio;
+  mosaic.width = Math.ceil(canvas.width / s); mosaic.height = Math.ceil(canvas.height / s);
+  mosaic.getContext('2d').drawImage(img, 0, 0, mosaic.width, mosaic.height);
+  setTool('pen');
+  draw();
+}
+
+function rectOf(s) {
+  const [a, b] = [s.pts[0], s.pts.at(-1)];
+  return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0);
+  const all = current ? [...strokes, current] : strokes;
+  ctx.imageSmoothingEnabled = false;
+  for (const s of all.filter(s => s.kind === 'blur')) {
+    const r = rectOf(s), m = mosaic.width / canvas.width;
+    ctx.drawImage(mosaic, r.x * m, r.y * m, r.w * m, r.h * m, r.x, r.y, r.w, r.h);
+  }
+  ctx.imageSmoothingEnabled = true;
+  Object.assign(ctx, { strokeStyle: INK, lineWidth: WIDTH * k, lineCap: 'round', lineJoin: 'round' });
+  for (const s of all) {
+    const r = rectOf(s), [a, b] = [s.pts[0], s.pts.at(-1)];
+    ctx.beginPath();
+    if (s.kind === 'pen') s.pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+    else if (s.kind === 'box') ctx.rect(r.x, r.y, r.w, r.h);
+    else if (s.kind === 'arrow') {
+      const ang = Math.atan2(b.y - a.y, b.x - a.x), head = 16 * k;
+      ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+      for (const d of [-0.5, 0.5]) { ctx.moveTo(b.x, b.y); ctx.lineTo(b.x - head * Math.cos(ang + d), b.y - head * Math.sin(ang + d)); }
+    }
+    ctx.stroke();
+  }
+}
+
+function pt(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * k, y: (e.clientY - r.top) * k };
+}
+
+function hits(s, p) {
+  const h = HIT * k;
+  if (s.kind === 'pen') return s.pts.some(q => Math.hypot(q.x - p.x, q.y - p.y) < h);
+  const r = rectOf(s);
+  return p.x > r.x - h && p.x < r.x + r.w + h && p.y > r.y - h && p.y < r.y + r.h + h;
+}
+
+function erase(p) {
+  const i = strokes.findLastIndex(s => hits(s, p));
+  if (i >= 0) { strokes.splice(i, 1); draw(); }
+}
+
+canvas.addEventListener('pointerdown', e => {
+  canvas.setPointerCapture(e.pointerId);
+  if (tool === 'erase') { erasing = true; erase(pt(e)); return; }
+  current = { kind: tool, pts: [pt(e)] };
+});
+canvas.addEventListener('pointermove', e => {
+  if (erasing) return erase(pt(e));
+  if (!current) return;
+  if (current.kind === 'pen') current.pts.push(pt(e)); else current.pts[1] = pt(e);
+  draw();
+});
+canvas.addEventListener('pointerup', () => {
+  if (current) {
+    const r = rectOf(current);
+    if (current.kind === 'pen' || r.w + r.h > 6 * k) strokes.push(current); // drop accidental clicks
+  }
+  current = null; erasing = false; draw();
+});
+
+function setTool(t) {
+  tool = t;
+  document.querySelectorAll('[data-tool]').forEach(b => b.setAttribute('aria-pressed', b.dataset.tool === t));
+  canvas.classList.toggle('erase', t === 'erase');
+}
+document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => setTool(b.dataset.tool));
+
+function undo() { strokes.pop(); draw(); }
+async function copy() {
+  try {
+    await invoke('copy_png', { png: canvas.toDataURL('image/png') });
+    document.getElementById('toast').style.display = 'grid';
+    setTimeout(() => win.close(), 450);
+  } catch (e) {
+    document.getElementById('toast').textContent = 'Copy failed: ' + e;
+    document.getElementById('toast').style.display = 'grid';
+  }
+}
+document.getElementById('undo').onclick = undo;
+document.getElementById('copy').onclick = copy;
+document.getElementById('close').onclick = () => win.close();
+
+addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') return undo();
+  if (e.key === 'Enter') return copy();
+  if (e.key === 'Escape') return win.close();
+  const t = { d: 'pen', a: 'arrow', b: 'box', x: 'blur', e: 'erase' }[e.key];
+  if (t) setTool(t);
+});
+</script>
+</body>
+</html>
