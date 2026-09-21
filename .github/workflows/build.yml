@@ -3,6 +3,15 @@ on: [push, workflow_dispatch]
 jobs:
   windows:
     runs-on: windows-latest
+    # GitHub-hosted runners can expose newer CPU instructions than many user
+    # laptops. Pin whisper.cpp/ggml to the Haswell-era AVX2 baseline so the
+    # installer remains fast without inheriting the runner's native ISA.
+    env:
+      GGML_NATIVE: OFF
+      GGML_SSE42: ON
+      GGML_AVX: ON
+      GGML_AVX2: ON
+      GGML_BMI2: ON
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
