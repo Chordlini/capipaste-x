@@ -234,7 +234,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 #[cfg(target_os = "windows")]
 pub struct Recorder {
-    stream: cpal::Stream,
+    stop: std::sync::mpsc::Sender<()>,
+    worker: std::thread::JoinHandle<()>,
     samples: Arc<Mutex<Vec<f32>>>,
     sample_rate: u32,
 }
@@ -295,31 +296,64 @@ fn start_recorder(
     mic: Option<&str>,
     status: Arc<Mutex<DictationStatus>>,
 ) -> Result<Recorder, String> {
-    let device = input_device(mic)?;
-    let supported = device.default_input_config().map_err(|e| e.to_string())?;
-    let format = supported.sample_format();
-    let sample_rate = supported.sample_rate().0;
-    let config: cpal::StreamConfig = supported.into();
     let samples = Arc::new(Mutex::new(Vec::new()));
-    let stream = match format {
-        cpal::SampleFormat::F32 => {
-            build_stream(&device, &config, samples.clone(), status, |v: f32| v)?
+    let thread_samples = samples.clone();
+    let mic = mic.map(str::to_owned);
+    let (stop, stop_rx) = std::sync::mpsc::channel();
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    // CPAL streams are intentionally !Send. Own the stream for its full lifetime
+    // on this dedicated audio thread and keep only Send handles in Tauri state.
+    let worker = std::thread::spawn(move || {
+        let setup = (|| -> Result<(cpal::Stream, u32), String> {
+            let device = input_device(mic.as_deref())?;
+            let supported = device.default_input_config().map_err(|e| e.to_string())?;
+            let format = supported.sample_format();
+            let sample_rate = supported.sample_rate().0;
+            let config: cpal::StreamConfig = supported.into();
+            let stream = match format {
+                cpal::SampleFormat::F32 => build_stream(
+                    &device,
+                    &config,
+                    thread_samples.clone(),
+                    status.clone(),
+                    |v: f32| v,
+                )?,
+                cpal::SampleFormat::I16 => build_stream(
+                    &device,
+                    &config,
+                    thread_samples.clone(),
+                    status.clone(),
+                    |v: i16| v as f32 / 32768.0,
+                )?,
+                cpal::SampleFormat::U16 => build_stream(
+                    &device,
+                    &config,
+                    thread_samples.clone(),
+                    status.clone(),
+                    |v: u16| v as f32 / 32768.0 - 1.0,
+                )?,
+                other => return Err(format!("Unsupported microphone format: {other}")),
+            };
+            stream.play().map_err(|e| e.to_string())?;
+            Ok((stream, sample_rate))
+        })();
+        match setup {
+            Ok((stream, sample_rate)) => {
+                let _ = ready_tx.send(Ok(sample_rate));
+                let _ = stop_rx.recv();
+                drop(stream);
+            }
+            Err(problem) => {
+                let _ = ready_tx.send(Err(problem));
+            }
         }
-        cpal::SampleFormat::I16 => {
-            build_stream(&device, &config, samples.clone(), status, |v: i16| {
-                v as f32 / 32768.0
-            })?
-        }
-        cpal::SampleFormat::U16 => {
-            build_stream(&device, &config, samples.clone(), status, |v: u16| {
-                v as f32 / 32768.0 - 1.0
-            })?
-        }
-        other => return Err(format!("Unsupported microphone format: {other}")),
-    };
-    stream.play().map_err(|e| e.to_string())?;
+    });
+    let sample_rate = ready_rx
+        .recv()
+        .map_err(|_| "Microphone thread stopped unexpectedly".to_string())??;
     Ok(Recorder {
-        stream,
+        stop,
+        worker,
         samples,
         sample_rate,
     })
@@ -449,11 +483,13 @@ pub fn finish(app: &AppHandle, model_id: &str, tidy: bool, vocabulary: &str) -> 
             .take()
             .ok_or("Microphone was not recording")?;
         let Recorder {
-            stream,
+            stop,
+            worker,
             samples,
             sample_rate,
         } = recorder;
-        drop(stream);
+        let _ = stop.send(());
+        let _ = worker.join();
         let raw = samples.lock().unwrap().clone();
         let audio = resample(&raw, sample_rate);
         let path = model_path(app, model_id)?;

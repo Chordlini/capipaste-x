@@ -230,7 +230,7 @@ fn delete_speech_model(app: AppHandle, id: String) -> Result<(), String> {
 
 #[tauri::command]
 fn dictation_status(state: State<dictation::DictationState>) -> dictation::DictationStatus {
-    dictation::status(&state)
+    dictation::status(state.inner())
 }
 
 fn model_chip(id: &str) -> &'static str {
