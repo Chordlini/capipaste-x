@@ -83,7 +83,13 @@ fn take_shot(state: State<AppState>) -> String {
 
 /// Overlay picked a region: hand the crop to a fresh markup card.
 #[tauri::command]
-fn open_card(app: AppHandle, state: State<AppState>, png: String, w: f64, h: f64) -> Result<(), String> {
+async fn open_card(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    png: String,
+    w: f64,
+    h: f64,
+) -> Result<(), String> {
     *state.shot.lock().unwrap() = png;
     if let Some(sel) = app.get_webview_window("select") {
         sel.close().map_err(err)?;
