@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: light; --paper: rgba(250,250,248,.96); --ink:#17171a; --ink2:#4a4a50; --ink3:#626268; --line:rgba(23,23,26,.10); --glacier:#0a8f7e; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; width:100%; height:100%; overflow:hidden; background:transparent; font-family:Segoe UI,system-ui,sans-serif; }
+  body { display:grid; place-items:center; padding:6px; user-select:none; }
+  .bar { width:100%; height:64px; display:grid; grid-template-columns:72px 150px minmax(0,1fr) auto; align-items:center; gap:12px; padding:0 15px; color:var(--ink); background:var(--paper); border:1px solid var(--line); border-radius:32px; box-shadow:0 14px 28px rgba(0,0,0,.20),0 2px 7px rgba(0,0,0,.10); }
+  .time { display:flex; align-items:center; gap:8px; color:var(--ink2); font-size:13px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .live { width:8px; height:8px; border-radius:50%; background:var(--ink3); transition:background 180ms ease,box-shadow 180ms ease; }
+  [data-phase="recording"] .live { background:var(--ink); box-shadow:0 0 0 4px rgba(23,23,26,.08); }
+  [data-phase="complete"] .live { background:var(--glacier); }
+  canvas { width:150px; height:36px; display:block; }
+  .copy { min-width:0; }
+  .message { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; font-weight:600; letter-spacing:-.01em; }
+  .hint { margin-top:2px; color:var(--ink3); font-size:12px; }
+  .chip { color:var(--glacier); background:rgba(10,143,126,.12); border-radius:999px; padding:4px 8px; font-size:11px; font-weight:700; letter-spacing:.04em; }
+  [data-phase="error"] .message { color:#9b2336; }
+</style>
+</head>
+<body>
+<main class="bar" id="bar" data-phase="idle" data-tauri-drag-region>
+  <div class="time"><span class="live"></span><span id="clock">0:00</span></div>
+  <canvas id="wave" width="300" height="72" aria-label="Live microphone level"></canvas>
+  <div class="copy"><div class="message" id="message">Hold the shortcut and speak</div><div class="hint" id="hint">On-device · release to finish</div></div>
+  <span class="chip" id="model">BASE</span>
+</main>
+<script>
+const { invoke } = window.__TAURI__.core;
+const canvas = document.getElementById('wave'), ctx = canvas.getContext('2d');
+const levels = Array(32).fill(.025);
+let lastPhase = 'idle';
+
+function draw(live) {
+  const w=canvas.width,h=canvas.height,d=6,g=3,rows=5,center=(rows-1)/2;
+  ctx.clearRect(0,0,w,h);
+  levels.forEach((level,i) => {
+    const x=w-(i+1)*(d+g), lit=Math.max(1,Math.round(level*rows));
+    for(let row=0;row<rows;row++) {
+      const y=h/2+(row-center)*(d+g)-d/2;
+      ctx.beginPath(); ctx.arc(x,y,d/2,0,Math.PI*2);
+      ctx.fillStyle=Math.abs(row-center)<lit/2 && live ? '#17171a' : 'rgba(23,23,26,.10)'; ctx.fill();
+    }
+  });
+}
+
+async function update() {
+  try {
+    const s=await invoke('dictation_status');
+    document.getElementById('bar').dataset.phase=s.phase;
+    document.getElementById('message').textContent=s.message;
+    document.getElementById('model').textContent=s.model;
+    document.getElementById('hint').textContent=s.phase==='transcribing'?'Punctuation and cleanup run locally':s.phase==='complete'?'Ready to paste':s.phase==='error'?'Open Settings to fix this':'On-device · release to finish';
+    const seconds=Math.floor(s.elapsedMs/1000);
+    document.getElementById('clock').textContent=`${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;
+    if(s.phase==='recording') { levels.unshift(s.level); levels.pop(); }
+    else if(lastPhase==='recording') levels.fill(.025);
+    lastPhase=s.phase; draw(s.phase==='recording');
+  } catch (_) {}
+}
+draw(false); setInterval(update,70); update();
+</script>
+</body>
+</html>

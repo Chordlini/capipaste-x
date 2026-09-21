@@ -1,3 +1,7 @@
+mod dictation;
+mod settings;
+
+use std::str::FromStr;
 use std::sync::Mutex;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
@@ -5,15 +9,23 @@ use image::ImageEncoder;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder};
-use tauri_plugin_global_shortcut::ShortcutState;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
-const HOTKEY: &str = "ctrl+shift+s";
-
-#[derive(Default)]
 struct AppState {
     shot: Mutex<String>, // PNG data URL handed from Rust (or the overlay) to the next window
     // X11 only serves clipboard data while the owner lives, so keep one around.
     clipboard: Mutex<Option<arboard::Clipboard>>,
+    settings: Mutex<settings::Settings>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            shot: Mutex::new(String::new()),
+            clipboard: Mutex::new(None),
+            settings: Mutex::new(settings::Settings::default()),
+        }
+    }
 }
 
 fn err(e: impl std::fmt::Display) -> String {
@@ -141,31 +153,158 @@ fn copy_png(app: AppHandle, state: State<AppState>, png: String) -> Result<Strin
     Ok(path.display().to_string())
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsPayload {
+    settings: settings::Settings,
+    microphones: Vec<String>,
+    models: Vec<dictation::SpeechModelInfo>,
+}
+
+#[tauri::command]
+fn get_settings(app: AppHandle, state: State<AppState>) -> Result<SettingsPayload, String> {
+    Ok(SettingsPayload {
+        settings: state.settings.lock().unwrap().clone(),
+        microphones: dictation::microphones()?,
+        models: dictation::list_models(&app)?,
+    })
+}
+
+fn register_shortcuts(app: &AppHandle, value: &settings::Settings) -> Result<(), String> {
+    Shortcut::from_str(&value.capture_hotkey).map_err(err)?;
+    Shortcut::from_str(&value.dictate_hotkey).map_err(err)?;
+    if value.capture_hotkey.eq_ignore_ascii_case(&value.dictate_hotkey) {
+        return Err("Capture and Dictate need different shortcuts".into());
+    }
+    app.global_shortcut().register(&value.capture_hotkey).map_err(err)?;
+    if let Err(problem) = app.global_shortcut().register(&value.dictate_hotkey) {
+        let _ = app.global_shortcut().unregister(&value.capture_hotkey);
+        return Err(problem.to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn save_settings(app: AppHandle, state: State<AppState>, value: settings::Settings) -> Result<(), String> {
+    let old = state.settings.lock().unwrap().clone();
+    app.global_shortcut().unregister_all().map_err(err)?;
+    if let Err(problem) = register_shortcuts(&app, &value) {
+        let _ = register_shortcuts(&app, &old);
+        return Err(format!("That shortcut could not be registered: {problem}"));
+    }
+    settings::save(&app, &value)?;
+    *state.settings.lock().unwrap() = value;
+    Ok(())
+}
+
+#[tauri::command]
+async fn download_speech_model(app: AppHandle, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || dictation::download_model(app, id))
+        .await
+        .map_err(err)?
+}
+
+#[tauri::command]
+fn delete_speech_model(app: AppHandle, id: String) -> Result<(), String> {
+    dictation::delete_model(&app, &id)
+}
+
+#[tauri::command]
+fn dictation_status(state: State<dictation::DictationState>) -> dictation::DictationStatus {
+    dictation::status(&state)
+}
+
+fn model_chip(id: &str) -> &'static str {
+    match id {
+        "tiny-en-q5" => "TINY",
+        "small-en-q5" => "SMALL",
+        _ => "BASE",
+    }
+}
+
+fn begin_dictation(app: &AppHandle) -> Result<(), String> {
+    let value = app.state::<AppState>().settings.lock().unwrap().clone();
+    dictation::start(app, Some(&value.microphone), model_chip(&value.speech_model))
+}
+
+fn end_dictation(app: &AppHandle) -> Result<(), String> {
+    let value = app.state::<AppState>().settings.lock().unwrap().clone();
+    dictation::finish(app, &value.speech_model, value.tidy, &value.vocabulary)
+}
+
+#[tauri::command]
+fn open_settings(app: AppHandle) -> Result<(), String> {
+    show_settings(&app)
+}
+
+fn show_settings(app: &AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("settings") {
+        win.show().map_err(err)?;
+        win.set_focus().map_err(err)?;
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+        .title("Capipaste Settings")
+        .inner_size(760.0, 650.0)
+        .min_inner_size(680.0, 560.0)
+        .center()
+        .build()
+        .map_err(err)?;
+    Ok(())
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(AppState::default())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcuts([HOTKEY])
-                .expect("valid hotkey")
-                .with_handler(|app, _, ev| {
-                    if ev.state == ShortcutState::Pressed {
+                .with_handler(|app, shortcut, ev| {
+                    let value = app.state::<AppState>().settings.lock().unwrap().clone();
+                    let capture_shortcut = Shortcut::from_str(&value.capture_hotkey).ok();
+                    let dictate_shortcut = Shortcut::from_str(&value.dictate_hotkey).ok();
+                    if ev.state == ShortcutState::Pressed && capture_shortcut.as_ref() == Some(shortcut) {
                         if let Err(e) = capture(app) {
                             eprintln!("capture failed: {e}");
+                        }
+                    } else if dictate_shortcut.as_ref() == Some(shortcut) {
+                        let result = if ev.state == ShortcutState::Pressed {
+                            begin_dictation(app)
+                        } else {
+                            end_dictation(app)
+                        };
+                        if let Err(e) = result {
+                            eprintln!("dictation failed: {e}");
                         }
                     }
                 })
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![take_shot, open_card, copy_png])
+        .manage(dictation::DictationState::default())
+        .invoke_handler(tauri::generate_handler![
+            take_shot,
+            open_card,
+            copy_png,
+            get_settings,
+            save_settings,
+            download_speech_model,
+            delete_speech_model,
+            dictation_status,
+            open_settings
+        ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            let saved = settings::load(app.handle());
+            *app.state::<AppState>().settings.lock().unwrap() = saved.clone();
+            register_shortcuts(app.handle(), &saved).map_err(std::io::Error::other)?;
+
             let menu = Menu::with_items(
                 app,
                 &[
-                    &MenuItem::with_id(app, "capture", "Capture", true, Some(HOTKEY))?,
+                    &MenuItem::with_id(app, "capture", "Capture", true, Some(saved.capture_hotkey.as_str()))?,
+                    &MenuItem::with_id(app, "dictate", "Dictate", true, Some(saved.dictate_hotkey.as_str()))?,
+                    &MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?,
                     &MenuItem::with_id(app, "quit", "Quit Capipaste", true, None::<&str>)?,
                 ],
             )?;
@@ -177,6 +316,18 @@ pub fn run() {
                     "capture" => {
                         if let Err(e) = capture(app) {
                             eprintln!("capture failed: {e}");
+                        }
+                    }
+                    "dictate" => {
+                        let active = app.state::<dictation::DictationState>().status.lock().unwrap().phase == "recording";
+                        let result = if active { end_dictation(app) } else { begin_dictation(app) };
+                        if let Err(e) = result {
+                            eprintln!("dictation failed: {e}");
+                        }
+                    }
+                    "settings" => {
+                        if let Err(e) = show_settings(app) {
+                            eprintln!("settings failed: {e}");
                         }
                     }
                     "quit" => app.exit(0),
