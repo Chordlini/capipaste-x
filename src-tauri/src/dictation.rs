@@ -1,4 +1,6 @@
-use std::path::{Path, PathBuf};
+#[cfg(target_os = "windows")]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -116,8 +118,15 @@ pub fn download_model(app: AppHandle, id: String) -> Result<(), String> {
         }
         std::io::Write::write_all(&mut output, &buffer[..read]).map_err(|e| e.to_string())?;
         downloaded += read as u64;
-        let percent = if total == 0 { 0 } else { downloaded.saturating_mul(100) / total };
-        let _ = app.emit("model-progress", serde_json::json!({ "id": id, "percent": percent }));
+        let percent = if total == 0 {
+            0
+        } else {
+            downloaded.saturating_mul(100) / total
+        };
+        let _ = app.emit(
+            "model-progress",
+            serde_json::json!({ "id": id, "percent": percent }),
+        );
     }
     std::fs::rename(&partial, &destination).map_err(|e| e.to_string())?;
     Ok(())
@@ -202,7 +211,8 @@ fn show_bar(app: &AppHandle) -> Result<(), String> {
         let pos = monitor.position();
         let x = pos.x + ((size.width as i32 - 620) / 2);
         let y = pos.y + (size.height as f32 * 0.80) as i32;
-        win.set_position(PhysicalPosition::new(x, y)).map_err(|e| e.to_string())?;
+        win.set_position(PhysicalPosition::new(x, y))
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -241,7 +251,8 @@ fn input_device(name: Option<&str>) -> Result<cpal::Device, String> {
             }
         }
     }
-    host.default_input_device().ok_or_else(|| "No microphone found".into())
+    host.default_input_device()
+        .ok_or_else(|| "No microphone found".into())
 }
 
 #[cfg(target_os = "windows")]
@@ -260,13 +271,15 @@ fn build_stream<T: cpal::SizedSample + Copy + Send + 'static>(
             move |data: &[T], _| {
                 let mut mono = Vec::with_capacity(data.len() / channels.max(1));
                 for frame in data.chunks(channels) {
-                    let value = frame.iter().copied().map(convert).sum::<f32>() / frame.len() as f32;
+                    let value =
+                        frame.iter().copied().map(convert).sum::<f32>() / frame.len() as f32;
                     mono.push(value);
                 }
                 ticks += mono.len();
                 if ticks >= 1600 {
                     ticks = 0;
-                    let rms = (mono.iter().map(|s| s * s).sum::<f32>() / mono.len().max(1) as f32).sqrt();
+                    let rms =
+                        (mono.iter().map(|s| s * s).sum::<f32>() / mono.len().max(1) as f32).sqrt();
                     status.lock().unwrap().level = (rms * 7.5).clamp(0.02, 1.0);
                 }
                 samples.lock().unwrap().extend(mono);
@@ -278,7 +291,10 @@ fn build_stream<T: cpal::SizedSample + Copy + Send + 'static>(
 }
 
 #[cfg(target_os = "windows")]
-fn start_recorder(mic: Option<&str>, status: Arc<Mutex<DictationStatus>>) -> Result<Recorder, String> {
+fn start_recorder(
+    mic: Option<&str>,
+    status: Arc<Mutex<DictationStatus>>,
+) -> Result<Recorder, String> {
     let device = input_device(mic)?;
     let supported = device.default_input_config().map_err(|e| e.to_string())?;
     let format = supported.sample_format();
@@ -286,13 +302,27 @@ fn start_recorder(mic: Option<&str>, status: Arc<Mutex<DictationStatus>>) -> Res
     let config: cpal::StreamConfig = supported.into();
     let samples = Arc::new(Mutex::new(Vec::new()));
     let stream = match format {
-        cpal::SampleFormat::F32 => build_stream(&device, &config, samples.clone(), status, |v: f32| v)?,
-        cpal::SampleFormat::I16 => build_stream(&device, &config, samples.clone(), status, |v: i16| v as f32 / 32768.0)?,
-        cpal::SampleFormat::U16 => build_stream(&device, &config, samples.clone(), status, |v: u16| v as f32 / 32768.0 - 1.0)?,
+        cpal::SampleFormat::F32 => {
+            build_stream(&device, &config, samples.clone(), status, |v: f32| v)?
+        }
+        cpal::SampleFormat::I16 => {
+            build_stream(&device, &config, samples.clone(), status, |v: i16| {
+                v as f32 / 32768.0
+            })?
+        }
+        cpal::SampleFormat::U16 => {
+            build_stream(&device, &config, samples.clone(), status, |v: u16| {
+                v as f32 / 32768.0 - 1.0
+            })?
+        }
         other => return Err(format!("Unsupported microphone format: {other}")),
     };
     stream.play().map_err(|e| e.to_string())?;
-    Ok(Recorder { stream, samples, sample_rate })
+    Ok(Recorder {
+        stream,
+        samples,
+        sample_rate,
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -329,7 +359,9 @@ fn transcribe(path: &Path, samples: &[f32], vocabulary: &str) -> Result<String, 
     if !vocabulary.trim().is_empty() {
         params.set_initial_prompt(vocabulary);
     }
-    state.full(params, samples).map_err(|e| format!("Transcription failed: {e}"))?;
+    state
+        .full(params, samples)
+        .map_err(|e| format!("Transcription failed: {e}"))?;
     let mut text = String::new();
     for segment in state.as_iter() {
         text.push_str(&segment.to_string());
@@ -343,7 +375,10 @@ pub fn clean_transcript(text: &str) -> String {
         let word = token
             .trim_matches(|c: char| !c.is_alphabetic())
             .to_ascii_lowercase();
-        let filler = matches!(word.as_str(), "um" | "umm" | "uh" | "uhh" | "erm" | "ah" | "hmm");
+        let filler = matches!(
+            word.as_str(),
+            "um" | "umm" | "uh" | "uhh" | "erm" | "ah" | "hmm"
+        );
         if filler {
             continue;
         }
@@ -407,8 +442,17 @@ pub fn finish(app: &AppHandle, model_id: &str, tidy: bool, vocabulary: &str) -> 
 
     #[cfg(target_os = "windows")]
     {
-        let recorder = state.recorder.lock().unwrap().take().ok_or("Microphone was not recording")?;
-        let Recorder { stream, samples, sample_rate } = recorder;
+        let recorder = state
+            .recorder
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or("Microphone was not recording")?;
+        let Recorder {
+            stream,
+            samples,
+            sample_rate,
+        } = recorder;
         drop(stream);
         let raw = samples.lock().unwrap().clone();
         let audio = resample(&raw, sample_rate);
@@ -424,10 +468,17 @@ pub fn finish(app: &AppHandle, model_id: &str, tidy: bool, vocabulary: &str) -> 
         let app = app.clone();
         let vocabulary = vocabulary.to_string();
         std::thread::spawn(move || {
-            let outcome = transcribe(&path, &audio, &vocabulary).map(|text| if tidy { clean_transcript(&text) } else { text });
+            let outcome = transcribe(&path, &audio, &vocabulary).map(|text| {
+                if tidy {
+                    clean_transcript(&text)
+                } else {
+                    text
+                }
+            });
             match outcome {
                 Ok(text) if !text.is_empty() => {
-                    let copied = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text.clone()));
+                    let copied = arboard::Clipboard::new()
+                        .and_then(|mut clipboard| clipboard.set_text(text.clone()));
                     let state = app.state::<DictationState>();
                     let mut value = state.status.lock().unwrap();
                     if copied.is_ok() {
@@ -455,7 +506,10 @@ pub fn finish(app: &AppHandle, model_id: &str, tidy: bool, vocabulary: &str) -> 
         });
     }
     #[cfg(not(target_os = "windows"))]
-    hide_bar_later(app.clone());
+    {
+        let _ = (model_id, tidy, vocabulary);
+        hide_bar_later(app.clone());
+    }
     Ok(())
 }
 

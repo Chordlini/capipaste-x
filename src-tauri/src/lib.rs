@@ -39,7 +39,12 @@ fn png_data_url(img: &image::RgbaImage) -> Result<String, String> {
         image::codecs::png::CompressionType::Fast,
         image::codecs::png::FilterType::Adaptive,
     )
-    .write_image(img, img.width(), img.height(), image::ExtendedColorType::Rgba8)
+    .write_image(
+        img,
+        img.width(),
+        img.height(),
+        image::ExtendedColorType::Rgba8,
+    )
     .map_err(err)?;
     Ok(format!("data:image/png;base64,{}", B64.encode(buf)))
 }
@@ -173,19 +178,33 @@ fn get_settings(app: AppHandle, state: State<AppState>) -> Result<SettingsPayloa
 fn register_shortcuts(app: &AppHandle, value: &settings::Settings) -> Result<(), String> {
     Shortcut::from_str(&value.capture_hotkey).map_err(err)?;
     Shortcut::from_str(&value.dictate_hotkey).map_err(err)?;
-    if value.capture_hotkey.eq_ignore_ascii_case(&value.dictate_hotkey) {
+    if value
+        .capture_hotkey
+        .eq_ignore_ascii_case(&value.dictate_hotkey)
+    {
         return Err("Capture and Dictate need different shortcuts".into());
     }
-    app.global_shortcut().register(&value.capture_hotkey).map_err(err)?;
-    if let Err(problem) = app.global_shortcut().register(&value.dictate_hotkey) {
-        let _ = app.global_shortcut().unregister(&value.capture_hotkey);
+    app.global_shortcut()
+        .register(value.capture_hotkey.as_str())
+        .map_err(err)?;
+    if let Err(problem) = app
+        .global_shortcut()
+        .register(value.dictate_hotkey.as_str())
+    {
+        let _ = app
+            .global_shortcut()
+            .unregister(value.capture_hotkey.as_str());
         return Err(problem.to_string());
     }
     Ok(())
 }
 
 #[tauri::command]
-fn save_settings(app: AppHandle, state: State<AppState>, value: settings::Settings) -> Result<(), String> {
+fn save_settings(
+    app: AppHandle,
+    state: State<AppState>,
+    value: settings::Settings,
+) -> Result<(), String> {
     let old = state.settings.lock().unwrap().clone();
     app.global_shortcut().unregister_all().map_err(err)?;
     if let Err(problem) = register_shortcuts(&app, &value) {
@@ -224,7 +243,11 @@ fn model_chip(id: &str) -> &'static str {
 
 fn begin_dictation(app: &AppHandle) -> Result<(), String> {
     let value = app.state::<AppState>().settings.lock().unwrap().clone();
-    dictation::start(app, Some(&value.microphone), model_chip(&value.speech_model))
+    dictation::start(
+        app,
+        Some(&value.microphone),
+        model_chip(&value.speech_model),
+    )
 }
 
 fn end_dictation(app: &AppHandle) -> Result<(), String> {
@@ -262,7 +285,9 @@ pub fn run() {
                     let value = app.state::<AppState>().settings.lock().unwrap().clone();
                     let capture_shortcut = Shortcut::from_str(&value.capture_hotkey).ok();
                     let dictate_shortcut = Shortcut::from_str(&value.dictate_hotkey).ok();
-                    if ev.state == ShortcutState::Pressed && capture_shortcut.as_ref() == Some(shortcut) {
+                    if ev.state == ShortcutState::Pressed
+                        && capture_shortcut.as_ref() == Some(shortcut)
+                    {
                         if let Err(e) = capture(app) {
                             eprintln!("capture failed: {e}");
                         }
@@ -302,8 +327,20 @@ pub fn run() {
             let menu = Menu::with_items(
                 app,
                 &[
-                    &MenuItem::with_id(app, "capture", "Capture", true, Some(saved.capture_hotkey.as_str()))?,
-                    &MenuItem::with_id(app, "dictate", "Dictate", true, Some(saved.dictate_hotkey.as_str()))?,
+                    &MenuItem::with_id(
+                        app,
+                        "capture",
+                        "Capture",
+                        true,
+                        Some(saved.capture_hotkey.as_str()),
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "dictate",
+                        "Dictate",
+                        true,
+                        Some(saved.dictate_hotkey.as_str()),
+                    )?,
                     &MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?,
                     &MenuItem::with_id(app, "quit", "Quit Capipaste", true, None::<&str>)?,
                 ],
@@ -319,8 +356,18 @@ pub fn run() {
                         }
                     }
                     "dictate" => {
-                        let active = app.state::<dictation::DictationState>().status.lock().unwrap().phase == "recording";
-                        let result = if active { end_dictation(app) } else { begin_dictation(app) };
+                        let active = app
+                            .state::<dictation::DictationState>()
+                            .status
+                            .lock()
+                            .unwrap()
+                            .phase
+                            == "recording";
+                        let result = if active {
+                            end_dictation(app)
+                        } else {
+                            begin_dictation(app)
+                        };
                         if let Err(e) = result {
                             eprintln!("dictation failed: {e}");
                         }
@@ -341,7 +388,10 @@ pub fn run() {
 
     // Tray app: closing the last window must not quit.
     app.run(|_, ev| {
-        if let RunEvent::ExitRequested { api, code: None, .. } = ev {
+        if let RunEvent::ExitRequested {
+            api, code: None, ..
+        } = ev
+        {
             api.prevent_exit();
         }
     });
