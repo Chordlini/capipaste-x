@@ -322,7 +322,9 @@ pub fn run() {
 
             let saved = settings::load(app.handle());
             *app.state::<AppState>().settings.lock().unwrap() = saved.clone();
-            register_shortcuts(app.handle(), &saved).map_err(std::io::Error::other)?;
+            if let Err(problem) = register_shortcuts(app.handle(), &saved) {
+                eprintln!("shortcuts unavailable: {problem}");
+            }
 
             let menu = Menu::with_items(
                 app,
