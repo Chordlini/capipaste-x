@@ -1,6 +1,6 @@
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
-use std::path::Path;
-use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -17,6 +17,8 @@ pub struct SpeechModelInfo {
     pub memory: &'static str,
     pub recommended: bool,
     pub installed: bool,
+    pub engine: &'static str,
+    pub compute: String,
 }
 
 struct SpeechModel {
@@ -28,6 +30,8 @@ struct SpeechModel {
     recommended: bool,
     file: &'static str,
     url: &'static str,
+    sha256: &'static str,
+    engine: &'static str,
 }
 
 const MODELS: &[SpeechModel] = &[
@@ -40,6 +44,8 @@ const MODELS: &[SpeechModel] = &[
         recommended: false,
         file: "ggml-tiny.en-q5_1.bin",
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin",
+        sha256: "",
+        engine: "whisper",
     },
     SpeechModel {
         id: "base-en-q5",
@@ -50,6 +56,8 @@ const MODELS: &[SpeechModel] = &[
         recommended: true,
         file: "ggml-base.en-q5_1.bin",
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin",
+        sha256: "",
+        engine: "whisper",
     },
     SpeechModel {
         id: "small-en-q5",
@@ -60,8 +68,105 @@ const MODELS: &[SpeechModel] = &[
         recommended: false,
         file: "ggml-small.en-q5_1.bin",
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin",
+        sha256: "",
+        engine: "whisper",
+    },
+    SpeechModel {
+        id: "nemotron-3.5-q8",
+        title: "Nemotron 3.5 Streaming · Multilingual",
+        subtitle: "Low-latency streaming with native punctuation and 32 ready-to-use locales",
+        download_size: "707 MB + runtime",
+        memory: "GPU recommended · ~1.5 GB VRAM",
+        recommended: true,
+        file: "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf",
+        url: "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/1c8deaecc64b91f034d73e08dd8b64625eb3395d/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf",
+        sha256: "a5c435f294eea8f88ce68dd27b8c3bfea7f777cb2fbba04fcd30eaa555f429ae",
+        engine: "nemo",
+    },
+    SpeechModel {
+        id: "nemotron-en-q8",
+        title: "Nemotron Streaming · English",
+        subtitle: "Fastest Nemotron choice for English-only dictation",
+        download_size: "668 MB + runtime",
+        memory: "GPU recommended · ~1.4 GB VRAM",
+        recommended: false,
+        file: "nemotron-speech-streaming-en-0.6b.q8_0.gguf",
+        url: "https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b/resolve/ebe59e5a817142986528bbbee5dba8db7b38ed50/nemotron-speech-streaming-en-0.6b.q8_0.gguf",
+        sha256: "d9a01898d2a611c8764e23a1c2f45e70bbd5a425dc4de93692ac951dd603812d",
+        engine: "nemo",
+    },
+    SpeechModel {
+        id: "parakeet-tdt-q8",
+        title: "Parakeet TDT 0.6B v3 · Throughput",
+        subtitle: "Fast NVIDIA batch transcription with punctuation; less immediate than Nemotron streaming",
+        download_size: "681 MB + runtime",
+        memory: "GPU recommended · ~1.5 GB VRAM",
+        recommended: false,
+        file: "parakeet-tdt-0.6b-v3.q8_0.gguf",
+        url: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/541d1f99c6b0c3cd0b11a95167540bb8edefd82b/parakeet-tdt-0.6b-v3.q8_0.gguf",
+        sha256: "e3880d0aaaaf2c308ea2c35016b2b895c423eb3fda924c1b463d1c19b7f4d32e",
+        engine: "nemo",
     },
 ];
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputeInfo {
+    pub backend: String,
+    pub device: String,
+    pub accelerated: bool,
+    pub detail: String,
+}
+
+#[cfg(target_os = "windows")]
+pub fn compute_info() -> ComputeInfo {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    if let Ok(output) = Command::new("nvidia-smi")
+        .args(["--query-gpu=name", "--format=csv,noheader"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        let name = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if output.status.success() && !name.is_empty() {
+            return ComputeInfo {
+                backend: "CUDA".into(),
+                device: name.clone(),
+                accelerated: true,
+                detail: format!("{name} · NVIDIA CUDA"),
+            };
+        }
+    }
+    if Path::new(r"C:\Windows\System32\vulkan-1.dll").is_file() {
+        return ComputeInfo {
+            backend: "VULKAN".into(),
+            device: "Windows GPU".into(),
+            accelerated: true,
+            detail: "Compatible GPU · Vulkan".into(),
+        };
+    }
+    ComputeInfo {
+        backend: "CPU".into(),
+        device: "Processor".into(),
+        accelerated: false,
+        detail: "No compatible GPU runtime detected · CPU fallback".into(),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn compute_info() -> ComputeInfo {
+    ComputeInfo {
+        backend: "CPU".into(),
+        device: "Processor".into(),
+        accelerated: false,
+        detail: "CPU fallback".into(),
+    }
+}
 
 fn model(id: &str) -> Option<&'static SpeechModel> {
     MODELS.iter().find(|m| m.id == id)
@@ -74,6 +179,122 @@ pub fn models_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())
 }
 
+fn runtime_dir(app: &AppHandle, backend: &str) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|p| {
+            p.join("nemo-speech-0.1.0")
+                .join(backend.to_ascii_lowercase())
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn runtime_spec(backend: &str) -> (&'static str, &'static str) {
+    match backend {
+        "CUDA" => (
+            "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-windows-x86_64-cuda.zip",
+            "ba024204e76ca2fa4eefa8787506c3c49e418147f627f60cf9206a582b60089c",
+        ),
+        "VULKAN" => (
+            "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-windows-x86_64-vulkan.zip",
+            "b5e7b04a637da4eb25a60253e2db65774998e8dfb48c08b4db763009b82ac7ac",
+        ),
+        _ => (
+            "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-windows-x86_64-cpu.zip",
+            "5e4ea81046012edcd77fd8848de8eefb5a4ba38cc26f52eb544ab184695a75d6",
+        ),
+    }
+}
+
+fn sha256(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).map_err(|e| e.to_string())?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn download_file(
+    app: &AppHandle,
+    id: &str,
+    url: &str,
+    partial: &Path,
+    from_percent: u64,
+    span_percent: u64,
+) -> Result<(), String> {
+    let mut response = reqwest::blocking::Client::new()
+        .get(url)
+        .send()
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| format!("Download failed: {e}"))?;
+    let total = response.content_length().unwrap_or(0);
+    let mut output = std::fs::File::create(partial).map_err(|e| e.to_string())?;
+    let mut downloaded = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = std::io::Read::read(&mut response, &mut buffer).map_err(|e| e.to_string())?;
+        if read == 0 {
+            break;
+        }
+        std::io::Write::write_all(&mut output, &buffer[..read]).map_err(|e| e.to_string())?;
+        downloaded += read as u64;
+        let fraction = if total == 0 {
+            0
+        } else {
+            downloaded.saturating_mul(span_percent) / total
+        };
+        let _ = app.emit(
+            "model-progress",
+            serde_json::json!({ "id": id, "percent": from_percent + fraction }),
+        );
+    }
+    output.sync_all().map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_nemo_runtime(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
+    let backend = compute_info().backend;
+    let dir = runtime_dir(app, &backend)?;
+    let exe = dir.join("bin").join("nemo-speech.exe");
+    if exe.is_file() {
+        return Ok(exe);
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let (url, expected) = runtime_spec(&backend);
+    let archive = dir.with_extension("zip.part");
+    download_file(app, id, url, &archive, 0, 15)?;
+    let actual = sha256(&archive)?;
+    if actual != expected {
+        let _ = std::fs::remove_file(&archive);
+        return Err("NeMo runtime download did not pass its checksum".into());
+    }
+    let file = std::fs::File::open(&archive).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    for index in 0..zip.len() {
+        let mut entry = zip.by_index(index).map_err(|e| e.to_string())?;
+        let Some(name) = entry.enclosed_name().map(Path::to_owned) else {
+            continue;
+        };
+        let target = dir.join(name);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+        } else {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let mut output = std::fs::File::create(&target).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut output).map_err(|e| e.to_string())?;
+        }
+    }
+    let _ = std::fs::remove_file(&archive);
+    if exe.is_file() {
+        Ok(exe)
+    } else {
+        Err("NeMo runtime archive was incomplete".into())
+    }
+}
+
 pub fn model_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
     let m = model(id).ok_or_else(|| "Unknown speech model".to_string())?;
     Ok(models_dir(app)?.join(m.file))
@@ -81,6 +302,7 @@ pub fn model_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
 
 pub fn list_models(app: &AppHandle) -> Result<Vec<SpeechModelInfo>, String> {
     let dir = models_dir(app)?;
+    let compute = compute_info();
     Ok(MODELS
         .iter()
         .map(|m| SpeechModelInfo {
@@ -91,6 +313,12 @@ pub fn list_models(app: &AppHandle) -> Result<Vec<SpeechModelInfo>, String> {
             memory: m.memory,
             recommended: m.recommended,
             installed: dir.join(m.file).is_file(),
+            engine: m.engine,
+            compute: if m.engine == "nemo" {
+                compute.backend.clone()
+            } else {
+                "CPU".into()
+            },
         })
         .collect())
 }
@@ -101,38 +329,40 @@ pub fn download_model(app: AppHandle, id: String) -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let destination = dir.join(m.file);
     let partial = dir.join(format!("{}.part", m.file));
-
-    let mut response = reqwest::blocking::Client::new()
-        .get(m.url)
-        .send()
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("Download failed: {e}"))?;
-    let total = response.content_length().unwrap_or(0);
-    let mut output = std::fs::File::create(&partial).map_err(|e| e.to_string())?;
-    let mut downloaded = 0_u64;
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = std::io::Read::read(&mut response, &mut buffer).map_err(|e| e.to_string())?;
-        if read == 0 {
-            break;
+    let start = if m.engine == "nemo" {
+        #[cfg(target_os = "windows")]
+        {
+            ensure_nemo_runtime(&app, &id)?;
         }
-        std::io::Write::write_all(&mut output, &buffer[..read]).map_err(|e| e.to_string())?;
-        downloaded += read as u64;
-        let percent = if total == 0 {
-            0
-        } else {
-            downloaded.saturating_mul(100) / total
-        };
-        let _ = app.emit(
-            "model-progress",
-            serde_json::json!({ "id": id, "percent": percent }),
-        );
+        15
+    } else {
+        0
+    };
+    download_file(&app, &id, m.url, &partial, start, 100 - start)?;
+    if !m.sha256.is_empty() && sha256(&partial)? != m.sha256 {
+        let _ = std::fs::remove_file(&partial);
+        return Err("Speech model download did not pass its checksum".into());
     }
     std::fs::rename(&partial, &destination).map_err(|e| e.to_string())?;
+    let _ = app.emit(
+        "model-progress",
+        serde_json::json!({ "id": id, "percent": 100 }),
+    );
     Ok(())
 }
 
 pub fn delete_model(app: &AppHandle, id: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let state = app.state::<DictationState>();
+        let mut server = state.nemo_server.lock().unwrap();
+        if server
+            .as_ref()
+            .is_some_and(|running| running.model_id == id)
+        {
+            *server = None;
+        }
+    }
     let path = model_path(app, id)?;
     if path.is_file() {
         std::fs::remove_file(path).map_err(|e| e.to_string())?;
@@ -167,6 +397,8 @@ pub struct DictationState {
     pub started: Mutex<Option<Instant>>,
     #[cfg(target_os = "windows")]
     pub recorder: Mutex<Option<Recorder>>,
+    #[cfg(target_os = "windows")]
+    nemo_server: Mutex<Option<NemoServer>>,
 }
 
 impl Default for DictationState {
@@ -176,8 +408,118 @@ impl Default for DictationState {
             started: Mutex::new(None),
             #[cfg(target_os = "windows")]
             recorder: Mutex::new(None),
+            #[cfg(target_os = "windows")]
+            nemo_server: Mutex::new(None),
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+struct NemoServer {
+    model_id: String,
+    child: Child,
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for NemoServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn nemo_device(backend: &str) -> &'static str {
+    match backend {
+        "CUDA" => "cuda:0",
+        "VULKAN" => "vulkan:0",
+        _ => "cpu",
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn prepare_model(app: &AppHandle, model_id: &str) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let selected = model(model_id).ok_or_else(|| "Unknown speech model".to_string())?;
+    if selected.engine != "nemo" {
+        return Ok(());
+    }
+    let path = model_path(app, model_id)?;
+    if !path.is_file() {
+        return Err("Download the selected speech model in Settings first".into());
+    }
+    let backend = compute_info().backend;
+    let exe = ensure_nemo_runtime(app, model_id)?;
+    let mut slot = app.state::<DictationState>().nemo_server.lock().unwrap();
+    if let Some(server) = slot.as_mut() {
+        if server.model_id == model_id
+            && server
+                .child
+                .try_wait()
+                .map_err(|e| e.to_string())?
+                .is_none()
+        {
+            return Ok(());
+        }
+    }
+    *slot = None;
+    let bin = exe.parent().ok_or("NeMo runtime path is invalid")?;
+    let child = Command::new(&exe)
+        .args([
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "49327",
+            "--threads",
+            "2",
+            "--no-ui",
+            "--asr-model",
+        ])
+        .arg(&path)
+        .args(["--device", nemo_device(&backend)])
+        .current_dir(bin)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| format!("Could not start the NeMo speech runtime: {e}"))?;
+    *slot = Some(NemoServer {
+        model_id: model_id.into(),
+        child,
+    });
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        if let Ok(response) = client.get("http://127.0.0.1:49327/ready").send() {
+            if response.status().is_success() {
+                return Ok(());
+            }
+        }
+        if let Some(server) = slot.as_mut() {
+            if let Some(exit) = server.child.try_wait().map_err(|e| e.to_string())? {
+                *slot = None;
+                return Err(format!(
+                    "NeMo speech runtime stopped during GPU warmup ({exit})"
+                ));
+            }
+        }
+        if Instant::now() >= deadline {
+            *slot = None;
+            return Err("NeMo speech runtime did not become ready in 90 seconds".into());
+        }
+        std::thread::sleep(Duration::from_millis(120));
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn prepare_model(_app: &AppHandle, _model_id: &str) -> Result<(), String> {
+    Ok(())
 }
 
 pub fn status(state: &DictationState) -> DictationStatus {
@@ -228,6 +570,16 @@ fn hide_bar_later(app: AppHandle) {
             state.status.lock().unwrap().phase = "idle".into();
         }
     });
+}
+
+pub fn show_error(app: &AppHandle, message: &str) {
+    let _ = show_bar(app);
+    let state = app.state::<DictationState>();
+    let mut value = state.status.lock().unwrap();
+    value.phase = "error".into();
+    value.message = message.into();
+    drop(value);
+    hide_bar_later(app.clone());
 }
 
 #[cfg(target_os = "windows")]
@@ -405,6 +757,68 @@ fn transcribe(path: &Path, samples: &[f32], vocabulary: &str) -> Result<String, 
 }
 
 #[cfg(target_os = "windows")]
+fn transcribe_nemo(samples: &[f32], vocabulary: &str) -> Result<String, String> {
+    let temp = std::env::temp_dir().join(format!(
+        "capipaste-{}-{}.wav",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_millis()
+    ));
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 16_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(&temp, spec).map_err(|e| e.to_string())?;
+    for sample in samples {
+        writer
+            .write_sample((sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+            .map_err(|e| e.to_string())?;
+    }
+    writer.finalize().map_err(|e| e.to_string())?;
+    let part = reqwest::blocking::multipart::Part::file(&temp)
+        .map_err(|e| e.to_string())?
+        .file_name("dictation.wav");
+    let mut form = reqwest::blocking::multipart::Form::new()
+        .part("file", part)
+        .text("model", "default")
+        .text("language", "en-US")
+        .text("response_format", "json")
+        .text("automatic_punctuation", "true");
+    let prompt = vocabulary
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !prompt.is_empty() {
+        form = form.text("prompt", prompt);
+    }
+    let response = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(45))
+        .build()
+        .map_err(|e| e.to_string())?
+        .post("http://127.0.0.1:49327/v1/audio/transcriptions")
+        .multipart(form)
+        .send()
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| format!("GPU transcription failed: {e}"));
+    let _ = std::fs::remove_file(&temp);
+    let value: serde_json::Value = response?
+        .json()
+        .map_err(|e| format!("Speech runtime returned invalid output: {e}"))?;
+    value
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .map(str::to_string)
+        .ok_or_else(|| "Speech runtime returned no transcript".into())
+}
+
+#[cfg(target_os = "windows")]
 fn paste_clipboard() -> Result<(), String> {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_V,
@@ -517,7 +931,13 @@ pub fn finish(app: &AppHandle, model_id: &str, tidy: bool, vocabulary: &str) -> 
         return Ok(());
     }
     state.status.lock().unwrap().phase = "transcribing".into();
-    state.status.lock().unwrap().message = "Transcribing on this PC…".into();
+    let selected = model(model_id).ok_or_else(|| "Unknown speech model".to_string())?;
+    let backend = if selected.engine == "nemo" {
+        compute_info().backend
+    } else {
+        "CPU".into()
+    };
+    state.status.lock().unwrap().message = format!("Finishing on {backend}…");
 
     #[cfg(target_os = "windows")]
     {
@@ -548,14 +968,15 @@ pub fn finish(app: &AppHandle, model_id: &str, tidy: bool, vocabulary: &str) -> 
         }
         let app = app.clone();
         let vocabulary = vocabulary.to_string();
+        let engine = selected.engine;
         std::thread::spawn(move || {
-            let outcome = transcribe(&path, &audio, &vocabulary).map(|text| {
-                if tidy {
-                    clean_transcript(&text)
-                } else {
-                    text
-                }
-            });
+            let started = Instant::now();
+            let outcome = if engine == "nemo" {
+                transcribe_nemo(&audio, &vocabulary)
+            } else {
+                transcribe(&path, &audio, &vocabulary)
+            }
+            .map(|text| if tidy { clean_transcript(&text) } else { text });
             match outcome {
                 Ok(text) if !text.is_empty() => {
                     let copied = arboard::Clipboard::new()
@@ -569,9 +990,15 @@ pub fn finish(app: &AppHandle, model_id: &str, tidy: bool, vocabulary: &str) -> 
                         #[cfg(target_os = "windows")]
                         {
                             value.message = if pasted {
-                                format!("Pasted · {text}")
+                                format!(
+                                    "Pasted in {:.1}s · {text}",
+                                    started.elapsed().as_secs_f32()
+                                )
                             } else {
-                                format!("Copied · {text}")
+                                format!(
+                                    "Copied in {:.1}s · {text}",
+                                    started.elapsed().as_secs_f32()
+                                )
                             };
                         }
                         #[cfg(not(target_os = "windows"))]

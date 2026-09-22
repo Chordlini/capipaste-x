@@ -164,6 +164,7 @@ struct SettingsPayload {
     settings: settings::Settings,
     microphones: Vec<String>,
     models: Vec<dictation::SpeechModelInfo>,
+    compute: dictation::ComputeInfo,
 }
 
 #[tauri::command]
@@ -172,6 +173,7 @@ fn get_settings(app: AppHandle, state: State<AppState>) -> Result<SettingsPayloa
         settings: state.settings.lock().unwrap().clone(),
         microphones: dictation::microphones()?,
         models: dictation::list_models(&app)?,
+        compute: dictation::compute_info(),
     })
 }
 
@@ -221,6 +223,13 @@ fn save_settings(
     }
     settings::save(&app, &value)?;
     *state.settings.lock().unwrap() = value;
+    let selected = state.settings.lock().unwrap().speech_model.clone();
+    let warm_app = app.clone();
+    std::thread::spawn(move || {
+        if let Err(problem) = dictation::prepare_model(&warm_app, &selected) {
+            eprintln!("speech model warmup failed: {problem}");
+        }
+    });
     Ok(())
 }
 
@@ -245,12 +254,19 @@ fn model_chip(id: &str) -> &'static str {
     match id {
         "tiny-en-q5" => "TINY",
         "small-en-q5" => "SMALL",
+        "nemotron-3.5-q8" => "NEMO 3.5",
+        "nemotron-en-q8" => "NEMO EN",
+        "parakeet-tdt-q8" => "PARAKEET",
         _ => "BASE",
     }
 }
 
 fn begin_dictation(app: &AppHandle) -> Result<(), String> {
     let value = app.state::<AppState>().settings.lock().unwrap().clone();
+    if let Err(problem) = dictation::prepare_model(app, &value.speech_model) {
+        dictation::show_error(app, &problem);
+        return Err(problem);
+    }
     dictation::start(
         app,
         Some(&value.microphone),
@@ -360,6 +376,14 @@ pub fn run() {
             }
             #[cfg(target_os = "windows")]
             listen_for_right_alt(app.handle().clone());
+
+            let warm_app = app.handle().clone();
+            let warm_model = saved.speech_model.clone();
+            std::thread::spawn(move || {
+                if let Err(problem) = dictation::prepare_model(&warm_app, &warm_model) {
+                    eprintln!("speech model warmup failed: {problem}");
+                }
+            });
 
             let dictate_accelerator = if uses_right_alt(&saved) {
                 None

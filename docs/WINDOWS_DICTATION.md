@@ -1,31 +1,32 @@
-# Windows dictation model plan
+# Windows dictation models and compute routing
 
-Capipaste X uses a CPU-first stack so dictation remains private, responsive, and useful on ordinary Windows laptops without a discrete GPU.
+Capipaste X selects a real accelerated runtime when the computer has one and labels the active backend in Settings. NVIDIA GPUs use CUDA, other compatible Windows GPUs use Vulkan, and machines without a compatible GPU keep the compact CPU Whisper fallback.
 
-## Speech models shipped in the app
+## Models available in the app
 
-| Model | Download | Typical memory | Best for |
-| --- | ---: | ---: | --- |
-| Whisper Tiny English Q5 | 31 MB | ~300 MB | Older laptops and short commands |
-| Whisper Base English Q5 | 57 MB | ~400 MB | Default for most laptops |
-| Whisper Small English Q5 | 181 MB | ~850 MB | Better accuracy on recent Core i5/Ryzen 5-class hardware |
+| Model | Download | Backend | Best for |
+| --- | ---: | --- | --- |
+| Nemotron 3.5 Streaming 0.6B Q8 | 707 MB | CUDA / Vulkan / CPU | Recommended low-latency multilingual dictation |
+| Nemotron Speech Streaming English 0.6B Q8 | 668 MB | CUDA / Vulkan / CPU | Fast English-only dictation |
+| Parakeet TDT 0.6B v3 Q8 | 681 MB | CUDA / Vulkan / CPU | High-throughput completed recordings |
+| Whisper Tiny / Base / Small English Q5 | 31 / 57 / 181 MB | CPU | Compact fallback for older laptops |
 
-The app runs these GGML models through [whisper.cpp](https://github.com/ggml-org/whisper.cpp), which supports CPU-only Windows inference, x86 AVX, Vulkan, CUDA, OpenVINO, and integer quantization. Whisper supplies capitalization and punctuation. Capipaste's lightweight tidy pass removes standalone filler sounds and immediately repeated words without another model or more memory.
+The Nemotron and Parakeet models run through NVIDIA's official [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) runtime. Capipaste downloads the matching release runtime, verifies both the runtime and model SHA-256 checksums, and keeps the selected ASR model warm between dictations. The local server is bound only to `127.0.0.1`.
 
-## Models evaluated
-
-- [Moonshine Streaming](https://github.com/moonshine-ai/moonshine) is the strongest candidate for a future low-latency engine. Its small streaming checkpoints and on-device focus are attractive, but Whisper.cpp currently has the simpler, more mature Windows packaging path.
-- [NVIDIA Parakeet TDT-CTC 110M](https://huggingface.co/nvidia/parakeet-tdt_ctc-110m) is fast, accurate, and emits punctuation and capitalization. Its official NeMo/PyTorch deployment is heavier than the runtime we want to ship to a broad laptop audience.
-- [Qwen 3.5 0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B) is a candidate for optional false-start and self-correction cleanup. The Mac app's Qwen 3.5 2B path remains the higher-quality target. Both should stay optional because they add substantially more download size and memory than the lightweight cleanup shipped now.
+Nemotron 3.5 is a cache-aware FastConformer-RNNT streaming model with native punctuation and capitalization. Its supported chunk sizes start at 80 ms. NVIDIA recommends the separate English Nemotron checkpoint for English-only use; the 3.5 checkpoint is the flexible multilingual choice. Parakeet TDT v3 is exposed for users who value throughput, but it is not presented as the lowest-latency option.
 
 ## Product behavior
 
 - Hold Right Alt to record; release it to transcribe, paste into the focused app, and retain a clipboard copy.
 - A 64-pixel floating waveform pill mirrors the Mac app's timer, dot matrix, status, and model chip.
-- Text is pasted and copied when transcription finishes. Audio is not uploaded or retained.
-- Capture and Dictate shortcuts, microphone, speech model, cleanup, and vocabulary are editable in Settings.
+- Settings shows the detected device and `CUDA`, `VULKAN`, or `CPU` explicitly.
+- Model inference, punctuation, cleanup, clipboard handling, and paste stay local. Network access is used only to download a selected model and its runtime.
+- The runtime and models are stored in the Capipaste application-data directory rather than inflating every installer.
 
-## Follow-up work
+## RTX 5080 validation
 
-1. Add an opt-in Qwen tidy download for semantic false-start and correction handling.
-2. Benchmark Moonshine Streaming on Intel, AMD, and ARM64 Windows hardware before exposing it as an engine choice.
+On the development RTX 5080, the official NeMo-Speech.cpp CUDA runtime detected the GPU and transcribed a 9.5-second synthetic dictation in 60 ms with the Nemotron 3.5 Q8 model after warmup. The first request after server startup took 629 ms. The previous CPU Whisper path took about 15 seconds in the user's real dictation test.
+
+## Next latency step
+
+The persistent local server removes model-load time and makes release-to-paste fast. The runtime also exposes a realtime PCM WebSocket and stable native streaming API; feeding microphone chunks during the key hold is the next step if measurements on slower GPUs show that post-release inference is still perceptible.
