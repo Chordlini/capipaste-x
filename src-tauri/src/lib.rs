@@ -279,6 +279,45 @@ fn end_dictation(app: &AppHandle) -> Result<(), String> {
     dictation::finish(app, &value.speech_model, value.tidy, &value.vocabulary)
 }
 
+fn start_model_watchdog(app: AppHandle) {
+    let spawn = std::thread::Builder::new()
+        .name("speech-model-watchdog".into())
+        .spawn(move || {
+            let mut last_problem: Option<String> = None;
+            loop {
+                let dictation_busy = app
+                    .state::<dictation::DictationState>()
+                    .status
+                    .lock()
+                    .unwrap()
+                    .phase
+                    != "idle";
+                let selected = app
+                    .state::<AppState>()
+                    .settings
+                    .lock()
+                    .unwrap()
+                    .speech_model
+                    .clone();
+                if !dictation_busy {
+                    match dictation::prepare_model(&app, &selected) {
+                        Ok(()) => last_problem = None,
+                        Err(problem) => {
+                            if last_problem.as_deref() != Some(problem.as_str()) {
+                                eprintln!("speech model watchdog: {problem}");
+                                last_problem = Some(problem);
+                            }
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_secs(15));
+            }
+        });
+    if let Err(problem) = spawn {
+        eprintln!("could not start speech model watchdog: {problem}");
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn listen_for_right_alt(app: AppHandle) {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_RMENU};
@@ -387,20 +426,7 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             listen_for_right_alt(app.handle().clone());
 
-            let warm_app = app.handle().clone();
-            std::thread::spawn(move || loop {
-                let selected = warm_app
-                    .state::<AppState>()
-                    .settings
-                    .lock()
-                    .unwrap()
-                    .speech_model
-                    .clone();
-                if let Err(problem) = dictation::prepare_model(&warm_app, &selected) {
-                    eprintln!("speech model warmup failed: {problem}");
-                }
-                std::thread::sleep(std::time::Duration::from_secs(15));
-            });
+            start_model_watchdog(app.handle().clone());
 
             let dictate_accelerator = if uses_right_alt(&saved) {
                 None

@@ -475,11 +475,23 @@ fn prime_nemo() -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
+fn nemo_is_ready() -> bool {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(750))
+        .build()
+        .and_then(|client| client.get("http://127.0.0.1:49327/ready").send())
+        .is_ok_and(|response| response.status().is_success())
+}
+
+#[cfg(target_os = "windows")]
 pub fn prepare_model(app: &AppHandle, model_id: &str) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     let selected = model(model_id).ok_or_else(|| "Unknown speech model".to_string())?;
+    let state = app.state::<DictationState>();
     if selected.engine != "nemo" {
+        // Switching to a CPU model should also release the GPU runtime and VRAM.
+        *state.nemo_server.lock().unwrap() = None;
         return Ok(());
     }
     let path = model_path(app, model_id)?;
@@ -488,7 +500,6 @@ pub fn prepare_model(app: &AppHandle, model_id: &str) -> Result<(), String> {
     }
     let backend = compute_info().backend;
     let exe = ensure_nemo_runtime(app, model_id)?;
-    let state = app.state::<DictationState>();
     let mut slot = state.nemo_server.lock().unwrap();
     if let Some(server) = slot.as_mut() {
         if server.model_id == model_id
@@ -497,6 +508,7 @@ pub fn prepare_model(app: &AppHandle, model_id: &str) -> Result<(), String> {
                 .try_wait()
                 .map_err(|e| e.to_string())?
                 .is_none()
+            && nemo_is_ready()
         {
             return Ok(());
         }
@@ -660,7 +672,10 @@ fn build_stream<T: cpal::SizedSample + Copy + Send + 'static>(
     convert: fn(T) -> f32,
 ) -> Result<cpal::Stream, String> {
     let channels = config.channels as usize;
-    let mut ticks = 0_usize;
+    let meter_window = (config.sample_rate.0 as usize / 20).max(1);
+    let mut meter_frames = 0_usize;
+    let mut meter_energy = 0.0_f32;
+    let mut meter_peak = 0.0_f32;
     device
         .build_input_stream(
             config,
@@ -671,12 +686,17 @@ fn build_stream<T: cpal::SizedSample + Copy + Send + 'static>(
                         frame.iter().copied().map(convert).sum::<f32>() / frame.len() as f32;
                     mono.push(value);
                 }
-                ticks += mono.len();
-                if ticks >= 1600 {
-                    ticks = 0;
-                    let rms =
-                        (mono.iter().map(|s| s * s).sum::<f32>() / mono.len().max(1) as f32).sqrt();
-                    status.lock().unwrap().level = (rms * 7.5).clamp(0.02, 1.0);
+                for &sample in &mono {
+                    meter_energy += sample * sample;
+                    meter_peak = meter_peak.max(sample.abs());
+                    meter_frames += 1;
+                }
+                if meter_frames >= meter_window {
+                    let rms = (meter_energy / meter_frames as f32).sqrt();
+                    status.lock().unwrap().level = visible_meter_level(rms, meter_peak);
+                    meter_frames = 0;
+                    meter_energy = 0.0;
+                    meter_peak = 0.0;
                 }
                 samples.lock().unwrap().extend(mono);
             },
@@ -684,6 +704,16 @@ fn build_stream<T: cpal::SizedSample + Copy + Send + 'static>(
             None,
         )
         .map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn visible_meter_level(rms: f32, peak: f32) -> f32 {
+    // Map the useful speech range (-55 to -10 dBFS) onto the whole meter.
+    // A little peak contribution makes consonants visible without making room
+    // noise look like speech.
+    let signal = (rms * 0.82 + peak * 0.18).max(0.000_001);
+    let dbfs = 20.0 * signal.log10();
+    ((dbfs + 55.0) / 45.0).clamp(0.0, 1.0).powf(0.82)
 }
 
 #[cfg(target_os = "windows")]
