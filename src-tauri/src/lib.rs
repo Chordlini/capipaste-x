@@ -175,9 +175,15 @@ fn get_settings(app: AppHandle, state: State<AppState>) -> Result<SettingsPayloa
     })
 }
 
+fn uses_right_alt(value: &settings::Settings) -> bool {
+    value.dictate_hotkey.eq_ignore_ascii_case("RightAlt")
+}
+
 fn register_shortcuts(app: &AppHandle, value: &settings::Settings) -> Result<(), String> {
     Shortcut::from_str(&value.capture_hotkey).map_err(err)?;
-    Shortcut::from_str(&value.dictate_hotkey).map_err(err)?;
+    if !uses_right_alt(value) {
+        Shortcut::from_str(&value.dictate_hotkey).map_err(err)?;
+    }
     if value
         .capture_hotkey
         .eq_ignore_ascii_case(&value.dictate_hotkey)
@@ -187,14 +193,16 @@ fn register_shortcuts(app: &AppHandle, value: &settings::Settings) -> Result<(),
     app.global_shortcut()
         .register(value.capture_hotkey.as_str())
         .map_err(err)?;
-    if let Err(problem) = app
-        .global_shortcut()
-        .register(value.dictate_hotkey.as_str())
-    {
-        let _ = app
+    if !uses_right_alt(value) {
+        if let Err(problem) = app
             .global_shortcut()
-            .unregister(value.capture_hotkey.as_str());
-        return Err(problem.to_string());
+            .register(value.dictate_hotkey.as_str())
+        {
+            let _ = app
+                .global_shortcut()
+                .unregister(value.capture_hotkey.as_str());
+            return Err(problem.to_string());
+        }
     }
     Ok(())
 }
@@ -253,6 +261,31 @@ fn begin_dictation(app: &AppHandle) -> Result<(), String> {
 fn end_dictation(app: &AppHandle) -> Result<(), String> {
     let value = app.state::<AppState>().settings.lock().unwrap().clone();
     dictation::finish(app, &value.speech_model, value.tidy, &value.vocabulary)
+}
+
+#[cfg(target_os = "windows")]
+fn listen_for_right_alt(app: AppHandle) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_RMENU};
+
+    std::thread::spawn(move || {
+        let mut was_down = false;
+        loop {
+            let enabled = uses_right_alt(&app.state::<AppState>().settings.lock().unwrap());
+            let is_down = enabled && unsafe { GetAsyncKeyState(VK_RMENU as i32) } < 0;
+            if is_down != was_down {
+                let result = if is_down {
+                    begin_dictation(&app)
+                } else {
+                    end_dictation(&app)
+                };
+                if let Err(problem) = result {
+                    eprintln!("Right Alt dictation failed: {problem}");
+                }
+            }
+            was_down = is_down;
+            std::thread::sleep(std::time::Duration::from_millis(8));
+        }
+    });
 }
 
 #[tauri::command]
@@ -325,6 +358,14 @@ pub fn run() {
             if let Err(problem) = register_shortcuts(app.handle(), &saved) {
                 eprintln!("shortcuts unavailable: {problem}");
             }
+            #[cfg(target_os = "windows")]
+            listen_for_right_alt(app.handle().clone());
+
+            let dictate_accelerator = if uses_right_alt(&saved) {
+                None
+            } else {
+                Some(saved.dictate_hotkey.as_str())
+            };
 
             let menu = Menu::with_items(
                 app,
@@ -336,13 +377,7 @@ pub fn run() {
                         true,
                         Some(saved.capture_hotkey.as_str()),
                     )?,
-                    &MenuItem::with_id(
-                        app,
-                        "dictate",
-                        "Dictate",
-                        true,
-                        Some(saved.dictate_hotkey.as_str()),
-                    )?,
+                    &MenuItem::with_id(app, "dictate", "Dictate", true, dictate_accelerator)?,
                     &MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?,
                     &MenuItem::with_id(app, "quit", "Quit Capipaste", true, None::<&str>)?,
                 ],

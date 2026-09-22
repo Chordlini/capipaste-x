@@ -20,13 +20,12 @@ The app runs these GGML models through [whisper.cpp](https://github.com/ggml-org
 
 ## Product behavior
 
-- Hold the Dictate shortcut to record; release it to transcribe.
+- Hold Right Alt to record; release it to transcribe, paste into the focused app, and retain a clipboard copy.
 - A 64-pixel floating waveform pill mirrors the Mac app's timer, dot matrix, status, and model chip.
-- Text is copied when transcription finishes. Audio is not uploaded or retained.
+- Text is pasted and copied when transcription finishes. Audio is not uploaded or retained.
 - Capture and Dictate shortcuts, microphone, speech model, cleanup, and vocabulary are editable in Settings.
 
 ## Follow-up work
 
 1. Add an opt-in Qwen tidy download for semantic false-start and correction handling.
-2. Add automatic paste behind an explicit Windows Accessibility-style permission/on-off setting.
-3. Benchmark Moonshine Streaming on Intel, AMD, and ARM64 Windows hardware before exposing it as an engine choice.
+2. Benchmark Moonshine Streaming on Intel, AMD, and ARM64 Windows hardware before exposing it as an engine choice.

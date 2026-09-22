@@ -18,7 +18,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             capture_hotkey: "Ctrl+Shift+S".into(),
-            dictate_hotkey: "Ctrl+Shift+D".into(),
+            dictate_hotkey: "RightAlt".into(),
             microphone: String::new(),
             speech_model: "base-en-q5".into(),
             tidy: true,
@@ -35,11 +35,17 @@ fn path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 pub fn load(app: &AppHandle) -> Settings {
-    path(app)
+    let mut value = path(app)
         .ok()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Migrate the original Windows default while preserving shortcuts the user
+    // deliberately customized to anything else.
+    if value.dictate_hotkey.eq_ignore_ascii_case("Ctrl+Shift+D") {
+        value.dictate_hotkey = "RightAlt".into();
+    }
+    value
 }
 
 pub fn save(app: &AppHandle, value: &Settings) -> Result<(), String> {

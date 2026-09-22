@@ -201,6 +201,7 @@ fn show_bar(app: &AppHandle) -> Result<(), String> {
         .always_on_top(true)
         .resizable(false)
         .skip_taskbar(true)
+        .focusable(false)
         .shadow(false)
         .transparent(true)
         .inner_size(620.0, 76.0)
@@ -403,6 +404,50 @@ fn transcribe(path: &Path, samples: &[f32], vocabulary: &str) -> Result<String, 
     Ok(text.trim().to_string())
 }
 
+#[cfg(target_os = "windows")]
+fn paste_clipboard() -> Result<(), String> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_V,
+    };
+
+    fn key(vk: u16, flags: u32) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+
+    // Give the physical Right Alt release time to clear before synthesizing
+    // Ctrl+V into the app that retained focus behind the non-focusable pill.
+    std::thread::sleep(Duration::from_millis(35));
+    let inputs = [
+        key(VK_CONTROL, 0),
+        key(VK_V, 0),
+        key(VK_V, KEYEVENTF_KEYUP),
+        key(VK_CONTROL, KEYEVENTF_KEYUP),
+    ];
+    let sent = unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        )
+    };
+    if sent == inputs.len() as u32 {
+        Ok(())
+    } else {
+        Err("Windows blocked automatic paste".into())
+    }
+}
+
 pub fn clean_transcript(text: &str) -> String {
     let mut kept: Vec<&str> = Vec::new();
     for token in text.split_whitespace() {
@@ -515,11 +560,24 @@ pub fn finish(app: &AppHandle, model_id: &str, tidy: bool, vocabulary: &str) -> 
                 Ok(text) if !text.is_empty() => {
                     let copied = arboard::Clipboard::new()
                         .and_then(|mut clipboard| clipboard.set_text(text.clone()));
+                    #[cfg(target_os = "windows")]
+                    let pasted = copied.is_ok() && paste_clipboard().is_ok();
                     let state = app.state::<DictationState>();
                     let mut value = state.status.lock().unwrap();
                     if copied.is_ok() {
                         value.phase = "complete".into();
-                        value.message = format!("Copied · {text}");
+                        #[cfg(target_os = "windows")]
+                        {
+                            value.message = if pasted {
+                                format!("Pasted · {text}")
+                            } else {
+                                format!("Copied · {text}")
+                            };
+                        }
+                        #[cfg(not(target_os = "windows"))]
+                        {
+                            value.message = format!("Copied · {text}");
+                        }
                     } else {
                         value.phase = "error".into();
                         value.message = "Transcribed, but the clipboard was unavailable".into();

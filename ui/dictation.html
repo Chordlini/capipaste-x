@@ -53,7 +53,7 @@ async function update() {
     document.getElementById('bar').dataset.phase=s.phase;
     document.getElementById('message').textContent=s.message;
     document.getElementById('model').textContent=s.model;
-    document.getElementById('hint').textContent=s.phase==='transcribing'?'Punctuation and cleanup run locally':s.phase==='complete'?'Ready to paste':s.phase==='error'?'Open Settings to fix this':'On-device · release to finish';
+    document.getElementById('hint').textContent=s.phase==='transcribing'?'Punctuation and cleanup run locally':s.phase==='complete'?'Pasted and copied':s.phase==='error'?'Open Settings to fix this':'On-device · release to finish';
     const seconds=Math.floor(s.elapsedMs/1000);
     document.getElementById('clock').textContent=`${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;
     if(s.phase==='recording') { levels.unshift(s.level); levels.pop(); }
