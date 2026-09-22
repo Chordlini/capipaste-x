@@ -75,6 +75,7 @@
     <section><h2>HOW IT WORKS</h2><div class="group">
       <div class="row"><div class="grow"><div class="label">Private by default</div><div class="detail">Audio and transcription stay on this computer. Only a model download uses the network.</div></div></div>
       <div class="row"><div class="grow"><div class="label">Tray app</div><div class="detail">Capture, dictate, open Settings, or quit from the Capipaste tray icon.</div></div></div>
+      <div class="row"><div class="grow"><div class="label">Ready before you need it</div><div class="detail">Capipaste starts with Windows and keeps the selected GPU model preloaded, so it is ready when ChatGPT opens.</div></div></div>
     </div></section>
   </div>
   <div class="page" id="speech">
@@ -90,9 +91,9 @@
   <div class="page" id="models">
     <h1>Model guide</h1><p class="lede">Current on-device speech models, matched to this Windows computer instead of treating every laptop like a CPU-only machine.</p>
     <section><h2>LOW-LATENCY GPU</h2><div class="group research">
-      <div class="row"><div><strong>Nemotron 3.5 Streaming Q8 <span class="badge">RECOMMENDED</span></strong><br>Cache-aware 600M streaming ASR, native punctuation and capitalization, and broad multilingual support. Capipaste keeps it warm between dictations.</div></div>
+      <div class="row"><div><strong>Parakeet TDT 0.6B v3 Q8 <span class="badge">RECOMMENDED</span></strong><br>The accuracy-first English default. It stays resident on the GPU and includes punctuation and capitalization.</div></div>
+      <div class="row"><div><strong>Nemotron 3.5 Streaming Q8</strong><br>Cache-aware 600M streaming ASR with broad multilingual support. Choose it when multilingual recognition matters more than maximum English accuracy.</div></div>
       <div class="row"><div><strong>Nemotron Streaming English Q8</strong><br>The focused English-only option. NVIDIA recommends it when multilingual recognition is not needed.</div></div>
-      <div class="row"><div><strong>Parakeet TDT 0.6B v3 Q8</strong><br>Excellent GPU throughput and punctuation for completed recordings. Nemotron remains the lower-latency dictation choice.</div></div>
     </div></section>
     <section><h2>CPU FALLBACK</h2><div class="group research">
       <div class="row"><div><strong>Whisper Tiny / Base / Small Q5</strong><br>Compact fallbacks for computers without a compatible GPU. They run locally but are intentionally labeled CPU because this build does not disguise CPU Whisper as accelerated.</div></div>

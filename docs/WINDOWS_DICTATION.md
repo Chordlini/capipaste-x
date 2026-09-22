@@ -6,20 +6,21 @@ Capipaste X selects a real accelerated runtime when the computer has one and lab
 
 | Model | Download | Backend | Best for |
 | --- | ---: | --- | --- |
-| Nemotron 3.5 Streaming 0.6B Q8 | 707 MB | CUDA / Vulkan / CPU | Recommended low-latency multilingual dictation |
+| Nemotron 3.5 Streaming 0.6B Q8 | 707 MB | CUDA / Vulkan / CPU | Low-latency multilingual dictation |
 | Nemotron Speech Streaming English 0.6B Q8 | 668 MB | CUDA / Vulkan / CPU | Fast English-only dictation |
-| Parakeet TDT 0.6B v3 Q8 | 681 MB | CUDA / Vulkan / CPU | High-throughput completed recordings |
+| Parakeet TDT 0.6B v3 Q8 | 681 MB | CUDA / Vulkan / CPU | Recommended accuracy-first English dictation |
 | Whisper Tiny / Base / Small English Q5 | 31 / 57 / 181 MB | CPU | Compact fallback for older laptops |
 
 The Nemotron and Parakeet models run through NVIDIA's official [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) runtime. Capipaste downloads the matching release runtime, verifies both the runtime and model SHA-256 checksums, and keeps the selected ASR model warm between dictations. The local server is bound only to `127.0.0.1`.
 
-Nemotron 3.5 is a cache-aware FastConformer-RNNT streaming model with native punctuation and capitalization. Its supported chunk sizes start at 80 ms. NVIDIA recommends the separate English Nemotron checkpoint for English-only use; the 3.5 checkpoint is the flexible multilingual choice. Parakeet TDT v3 is exposed for users who value throughput, but it is not presented as the lowest-latency option.
+Nemotron 3.5 is a cache-aware FastConformer-RNNT streaming model with native punctuation and capitalization. Its supported chunk sizes start at 80 ms. NVIDIA recommends the separate English Nemotron checkpoint for English-only use; the 3.5 checkpoint is the flexible multilingual choice. Parakeet TDT v3 is the default because its published English Open-ASR average WER is 6.34%, better than English Nemotron's 6.93% at the most accurate 1.12-second streaming context.
 
 ## Product behavior
 
 - Hold Right Alt to record; release it to transcribe, paste into the focused app, and retain a clipboard copy.
 - A 64-pixel floating waveform pill mirrors the Mac app's timer, dot matrix, status, and model chip.
 - Settings shows the detected device and `CUDA`, `VULKAN`, or `CPU` explicitly.
+- Capipaste registers itself to start with Windows, preloads the selected model immediately, and checks every 15 seconds that the model process is still alive.
 - Model inference, punctuation, cleanup, clipboard handling, and paste stay local. Network access is used only to download a selected model and its runtime.
 - The runtime and models are stored in the Capipaste application-data directory rather than inflating every installer.
 

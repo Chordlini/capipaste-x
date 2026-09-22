@@ -20,7 +20,7 @@ impl Default for Settings {
             capture_hotkey: "Ctrl+Shift+S".into(),
             dictate_hotkey: "RightAlt".into(),
             microphone: String::new(),
-            speech_model: "nemotron-3.5-q8".into(),
+            speech_model: "parakeet-tdt-q8".into(),
             tidy: true,
             vocabulary: String::new(),
         }
@@ -44,6 +44,17 @@ pub fn load(app: &AppHandle) -> Settings {
     // deliberately customized to anything else.
     if value.dictate_hotkey.eq_ignore_ascii_case("Ctrl+Shift+D") {
         value.dictate_hotkey = "RightAlt".into();
+    }
+    // The first GPU build defaulted to multilingual Nemotron. Move that
+    // default to the more accurate English Parakeet model once it is present.
+    if value.speech_model == "nemotron-3.5-q8"
+        && app
+            .path()
+            .app_data_dir()
+            .map(|dir| dir.join("models").join("parakeet-tdt-0.6b-v3.q8_0.gguf"))
+            .is_ok_and(|model| model.is_file())
+    {
+        value.speech_model = "parakeet-tdt-q8".into();
     }
     value
 }

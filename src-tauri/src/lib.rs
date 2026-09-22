@@ -328,6 +328,10 @@ fn show_settings(app: &AppHandle) -> Result<(), String> {
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(AppState::default())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, ev| {
@@ -366,8 +370,14 @@ pub fn run() {
             open_settings
         ])
         .setup(|app| {
+            use tauri_plugin_autostart::ManagerExt;
+
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            if let Err(problem) = app.autolaunch().enable() {
+                eprintln!("could not enable Capipaste startup: {problem}");
+            }
 
             let saved = settings::load(app.handle());
             *app.state::<AppState>().settings.lock().unwrap() = saved.clone();
@@ -378,11 +388,18 @@ pub fn run() {
             listen_for_right_alt(app.handle().clone());
 
             let warm_app = app.handle().clone();
-            let warm_model = saved.speech_model.clone();
-            std::thread::spawn(move || {
-                if let Err(problem) = dictation::prepare_model(&warm_app, &warm_model) {
+            std::thread::spawn(move || loop {
+                let selected = warm_app
+                    .state::<AppState>()
+                    .settings
+                    .lock()
+                    .unwrap()
+                    .speech_model
+                    .clone();
+                if let Err(problem) = dictation::prepare_model(&warm_app, &selected) {
                     eprintln!("speech model warmup failed: {problem}");
                 }
+                std::thread::sleep(std::time::Duration::from_secs(15));
             });
 
             let dictate_accelerator = if uses_right_alt(&saved) {
