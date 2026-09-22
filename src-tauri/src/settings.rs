@@ -20,7 +20,7 @@ impl Default for Settings {
             capture_hotkey: "Ctrl+Shift+S".into(),
             dictate_hotkey: "RightAlt".into(),
             microphone: String::new(),
-            speech_model: "base-en-q5".into(),
+            speech_model: "nemotron-3.5-q8".into(),
             tidy: true,
             vocabulary: String::new(),
         }

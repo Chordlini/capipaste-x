@@ -273,7 +273,7 @@ fn ensure_nemo_runtime(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
     let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
     for index in 0..zip.len() {
         let mut entry = zip.by_index(index).map_err(|e| e.to_string())?;
-        let Some(name) = entry.enclosed_name().map(Path::to_owned) else {
+        let Some(name) = entry.enclosed_name() else {
             continue;
         };
         let target = dir.join(name);
@@ -438,6 +438,43 @@ fn nemo_device(backend: &str) -> &'static str {
 }
 
 #[cfg(target_os = "windows")]
+fn prime_nemo() -> Result<(), String> {
+    let samples = 5_120_u32;
+    let data_bytes = samples * 2;
+    let mut wav = Vec::with_capacity((44 + data_bytes) as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16_u32.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&16_000_u32.to_le_bytes());
+    wav.extend_from_slice(&32_000_u32.to_le_bytes());
+    wav.extend_from_slice(&2_u16.to_le_bytes());
+    wav.extend_from_slice(&16_u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_bytes.to_le_bytes());
+    wav.resize((44 + data_bytes) as usize, 0);
+    let form = reqwest::blocking::multipart::Form::new()
+        .part(
+            "file",
+            reqwest::blocking::multipart::Part::bytes(wav).file_name("warmup.wav"),
+        )
+        .text("model", "default")
+        .text("language", "en-US");
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?
+        .post("http://127.0.0.1:49327/v1/audio/transcriptions")
+        .multipart(form)
+        .send()
+        .and_then(|response| response.error_for_status())
+        .map(|_| ())
+        .map_err(|e| format!("Could not prime the GPU speech model: {e}"))
+}
+
+#[cfg(target_os = "windows")]
 pub fn prepare_model(app: &AppHandle, model_id: &str) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -451,7 +488,8 @@ pub fn prepare_model(app: &AppHandle, model_id: &str) -> Result<(), String> {
     }
     let backend = compute_info().backend;
     let exe = ensure_nemo_runtime(app, model_id)?;
-    let mut slot = app.state::<DictationState>().nemo_server.lock().unwrap();
+    let state = app.state::<DictationState>();
+    let mut slot = state.nemo_server.lock().unwrap();
     if let Some(server) = slot.as_mut() {
         if server.model_id == model_id
             && server
@@ -498,6 +536,10 @@ pub fn prepare_model(app: &AppHandle, model_id: &str) -> Result<(), String> {
     loop {
         if let Ok(response) = client.get("http://127.0.0.1:49327/ready").send() {
             if response.status().is_success() {
+                if let Err(problem) = prime_nemo() {
+                    *slot = None;
+                    return Err(problem);
+                }
                 return Ok(());
             }
         }
