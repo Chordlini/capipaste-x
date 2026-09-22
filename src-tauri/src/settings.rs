@@ -35,7 +35,7 @@ fn path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 pub fn load(app: &AppHandle) -> Settings {
-    let mut value = path(app)
+    let mut value: Settings = path(app)
         .ok()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|json| serde_json::from_str(&json).ok())
